@@ -1,51 +1,88 @@
-
 name: Auto Sync Fork
 
 on:
   schedule:
+    # 10:17 Asia/Shanghai (02:17 UTC)
     - cron: '17 2 * * *'
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/sync.yml']
 
 permissions:
   contents: write
 
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
 jobs:
   sync:
+    if: github.repository == 'Index98/CNFSD'
     runs-on: ubuntu-latest
-
+    timeout-minutes: 10
     steps:
-      - name: Checkout Fork
+      - name: Checkout fork
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
-      - name: Sync Upstream
+      - name: Merge upstream without overwriting fork changes
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           set -euo pipefail
-
-          # 自动识别 Fork 和原仓库
           INFO=$(gh api "repos/$GITHUB_REPOSITORY")
-          UPSTREAM=$(echo "$INFO" | jq -r '.parent.full_name // empty')
-          UPSTREAM_BRANCH=$(echo "$INFO" | jq -r '.parent.default_branch // empty')
-          FORK_BRANCH=$(echo "$INFO" | jq -r '.default_branch')
-
-          if [ -z "$UPSTREAM" ] || [ -z "$UPSTREAM_BRANCH" ]; then
-            echo "Error: Not a valid fork repository"
+          UPSTREAM=$(jq -r '.parent.full_name // empty' <<< "$INFO")
+          UPSTREAM_BRANCH=$(jq -r '.parent.default_branch // empty' <<< "$INFO")
+          FORK_BRANCH=$(jq -r '.default_branch' <<< "$INFO")
+          if [[ "$UPSTREAM" != 'zeratulhx/Tesla-drug' || -z "$UPSTREAM_BRANCH" || "$FORK_BRANCH" != 'main' ]]; then
+            echo '::error::Repository metadata changed; review sync configuration.'
             exit 1
           fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch --no-tags "https://github.com/$UPSTREAM.git" "$UPSTREAM_BRANCH"
+          UPSTREAM_SHA=$(git rev-parse FETCH_HEAD)
 
-          echo "Upstream: $UPSTREAM"
-          echo "Branch: $UPSTREAM_BRANCH"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git fetch "https://github.com/$UPSTREAM.git" "$UPSTREAM_BRANCH"
-
-          git checkout "$FORK_BRANCH"
-          git merge --no-edit FETCH_HEAD
-          git push origin "HEAD:$FORK_BRANCH"
-
-          echo "Sync completed!"
+          if git merge-base HEAD "$UPSTREAM_SHA" >/dev/null; then
+            if ! git merge --no-edit "$UPSTREAM_SHA"; then
+              git merge --abort
+              echo '::error::Merge conflict. Fork changes were preserved; resolve manually.'
+              exit 1
+            fi
+          else
+            # One-time repair for the upstream history rewrite on 2026-11-20.
+            # Only permit the verified original fork content plus this workflow.
+            ORIGINAL='7def0dcc9ed0e91a5476f82487ecaefe223d20bd'
+            BACKUP_COMMIT='6a446e32a2c5803b14c6b36b6db1fa99403abd69'
+            BACKUP='backup/before-upstream-sync-20261120'
+            git merge-base --is-ancestor "$ORIGINAL" HEAD
+            if ! git diff --quiet "$ORIGINAL" HEAD -- . ':(exclude).github/workflows/sync.yml'; then
+              echo '::error::Unrelated histories with local content changes; manual review required.'
+              exit 1
+            fi
+            if ! git ls-remote --exit-code --heads origin "$BACKUP" >/dev/null 2>&1; then
+              git push origin "$BACKUP_COMMIT:refs/heads/$BACKUP"
+            fi
+            if ! git merge --allow-unrelated-histories --no-commit --no-ff "$UPSTREAM_SHA"; then
+              CONFLICTS=$(git diff --name-only --diff-filter=U)
+              if [[ "$CONFLICTS" != 'README.md' ]]; then
+                git merge --abort
+                echo '::error::Unexpected bootstrap conflict; no main branch update was pushed.'
+                exit 1
+              fi
+              # The fork README is verified unchanged from its original version.
+              git restore --source="$UPSTREAM_SHA" --staged --worktree -- README.md
+            fi
+            git commit -m "Merge upstream after history rewrite; preserve fork files and history"
+          fi
+          git push origin "HEAD:refs/heads/$FORK_BRANCH"
+          {
+            echo '### Upstream sync completed'
+            echo "Upstream: $UPSTREAM ($UPSTREAM_BRANCH)"
+            echo "Upstream commit: $UPSTREAM_SHA"
+            echo 'Fork history and local files preserved. No force push used.'
+          } >> "$GITHUB_STEP_SUMMARY"
