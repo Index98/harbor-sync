@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   sync:
-    if: github.repository == 'Index98/CNFSD'
+    if: github.repository_owner == 'Index98'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -35,8 +35,8 @@ jobs:
         run: |
           set -euo pipefail
           INFO=$(gh api "repos/$GITHUB_REPOSITORY")
-          UPSTREAM=$(jq -r '.parent.full_name // empty' <<< "$INFO")
-          UPSTREAM_BRANCH=$(jq -r '.parent.default_branch // empty' <<< "$INFO")
+          UPSTREAM='zeratulhx/Tesla-drug'
+          UPSTREAM_BRANCH=$(gh api "repos/$UPSTREAM" --jq '.default_branch')
           FORK_BRANCH=$(jq -r '.default_branch' <<< "$INFO")
           if [[ "$UPSTREAM" != 'zeratulhx/Tesla-drug' || -z "$UPSTREAM_BRANCH" || "$FORK_BRANCH" != 'main' ]]; then
             echo '::error::Repository metadata changed; review sync configuration.'
