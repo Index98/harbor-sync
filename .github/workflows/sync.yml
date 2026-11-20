@@ -1,0 +1,51 @@
+
+name: Auto Sync Fork
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync Upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # 自动识别 Fork 和原仓库
+          INFO=$(gh api "repos/$GITHUB_REPOSITORY")
+          UPSTREAM=$(echo "$INFO" | jq -r '.parent.full_name // empty')
+          UPSTREAM_BRANCH=$(echo "$INFO" | jq -r '.parent.default_branch // empty')
+          FORK_BRANCH=$(echo "$INFO" | jq -r '.default_branch')
+
+          if [ -z "$UPSTREAM" ] || [ -z "$UPSTREAM_BRANCH" ]; then
+            echo "Error: Not a valid fork repository"
+            exit 1
+          fi
+
+          echo "Upstream: $UPSTREAM"
+          echo "Branch: $UPSTREAM_BRANCH"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch "https://github.com/$UPSTREAM.git" "$UPSTREAM_BRANCH"
+
+          git checkout "$FORK_BRANCH"
+          git merge --no-edit FETCH_HEAD
+          git push origin "HEAD:$FORK_BRANCH"
+
+          echo "Sync completed!"
